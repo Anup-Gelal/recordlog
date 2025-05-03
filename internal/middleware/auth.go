@@ -1,13 +1,13 @@
 package middleware
 
 import (
-	"net/http"
-	"strings"
-	"time"
-
+	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/time/rate"
+	"net/http"
+	"strings"
+	"time"
 )
 
 // AuthMiddleware verifies JWT tokens in incoming requests
@@ -48,7 +48,8 @@ func AuthMiddleware(jwtSecret []byte) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-
+		// Print JWT claims for debugging
+		fmt.Printf("JWT Claims: %#v\n", claims)
 		// Check expiration
 		if exp, ok := claims["exp"].(float64); ok {
 			if time.Now().Unix() > int64(exp) {
@@ -63,8 +64,12 @@ func AuthMiddleware(jwtSecret []byte) gin.HandlerFunc {
 		}
 
 		// Set user information to context
-		if uid, ok := claims["user_id"]; ok {
-			c.Set("user_id", uid)
+		if uid, ok := claims["user_id"].(float64); ok {
+			c.Set("user_id", int(uid))
+		} else {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "user_id not found in token"})
+			c.Abort()
+			return
 		}
 		if email, ok := claims["email"]; ok {
 			c.Set("email", email)

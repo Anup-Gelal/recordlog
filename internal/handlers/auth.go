@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"database/sql"
+	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/phpdave11/gofpdf"
@@ -241,15 +242,31 @@ func (h *NoteHandler) CreateNote(c *gin.Context) {
 
 // GetUserNotes retrieves all notes for the authenticated user
 func (h *NoteHandler) GetUserNotes(c *gin.Context) {
+	log.Println("Attempting to fetch user_id from context...")
 	userIDVal, exists := c.Get("user_id")
 	if !exists {
+		log.Println("user_id not found in context")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
 	}
-	userID := userIDVal.(int)
+	log.Printf("user_id found in context: %v (%T)", userIDVal, userIDVal)
+
+	// Handle type assertion properly
+	var userID int
+	switch v := userIDVal.(type) {
+	case float64:
+		userID = int(v)
+	case int:
+		userID = v
+	default:
+		log.Printf("Invalid user_id type: %T", userIDVal)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid user ID type"})
+		return
+	}
 
 	rows, err := h.db.DB.Query("SELECT id, user_id, date, time, approved_by, content FROM notes WHERE user_id = ?", userID)
 	if err != nil {
+		log.Printf("DB error while fetching notes: %v", err) // add logging
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch notes"})
 		return
 	}
@@ -258,9 +275,11 @@ func (h *NoteHandler) GetUserNotes(c *gin.Context) {
 	var notes []models.Note
 	for rows.Next() {
 		var note models.Note
-		if err := rows.Scan(&note.ID, &note.UserID, &note.Date, &note.Time, &note.ApprovedBy, &note.Content); err == nil {
-			notes = append(notes, note)
+		if err := rows.Scan(&note.ID, &note.UserID, &note.Date, &note.Time, &note.ApprovedBy, &note.Content); err != nil {
+			log.Printf("Row scan error: %v", err) // log scan errors
+			continue
 		}
+		notes = append(notes, note)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"notes": notes})
@@ -273,7 +292,13 @@ func (h *NoteHandler) UpdateNote(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
 	}
-	userID := userIDVal.(int)
+
+	// Ensure userID is of the correct type
+	userID, ok := userIDVal.(int)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid user ID"})
+		return
+	}
 
 	var note models.Note
 	if err := c.ShouldBindJSON(&note); err != nil {
@@ -281,10 +306,15 @@ func (h *NoteHandler) UpdateNote(c *gin.Context) {
 		return
 	}
 
+	// Log to check userID and note ID
+	fmt.Printf("Updating note with ID: %d, for userID: %d\n", note.ID, userID)
+
 	// Check ownership
 	var existsID int
 	err := h.db.DB.QueryRow("SELECT id FROM notes WHERE id = ? AND user_id = ?", note.ID, userID).Scan(&existsID)
 	if err != nil {
+		// Print the error for debugging
+		fmt.Printf("Error checking ownership: %v\n", err)
 		c.JSON(http.StatusForbidden, gin.H{"error": "You do not have permission to update this note"})
 		return
 	}
@@ -295,7 +325,12 @@ func (h *NoteHandler) UpdateNote(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Note updated successfully"})
+	// Include user_id and note_id in the success response
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Note updated successfully",
+		"user_id": userID,  // Include the user ID for debugging
+		"note_id": note.ID, // Include the note ID for debugging
+	})
 }
 
 // SearchNotes allows filtering by date and approved_by
@@ -305,7 +340,12 @@ func (h *NoteHandler) SearchNotes(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
 	}
-	userID := userIDVal.(int)
+
+	userID, ok := userIDVal.(int)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid user ID"})
+		return
+	}
 
 	date := c.Query("date")
 	approvedBy := c.Query("approved_by")
@@ -334,7 +374,16 @@ func (h *NoteHandler) SearchNotes(c *gin.Context) {
 		var note models.Note
 		if err := rows.Scan(&note.ID, &note.UserID, &note.Date, &note.Time, &note.ApprovedBy, &note.Content); err == nil {
 			notes = append(notes, note)
+		} else {
+			// log the error if any issue occurs during row scan
+			log.Printf("Error scanning row: %v", err)
 		}
+	}
+
+	// If no notes found, return an appropriate message
+	if len(notes) == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"message": "No notes found"})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"notes": notes})
